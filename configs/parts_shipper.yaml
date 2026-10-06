@@ -1,0 +1,77 @@
+# 04-PARTS — exportador de repuestos (marítimo), "Part Search Results" por mail.
+#
+# Lo desordenado de este reporte:
+#   - seriales de Excel sueltos en columnas de fecha (45910 en vez de 09/09/2025);
+#   - dos columnas sin título en el medio del encabezado;
+#   - filas sin lugar de empaque, sin factura o con el arribo fuera de ventana;
+#   - un reporte a nivel de pieza: la misma factura se repite cientos de veces.
+agente: parts_shipper
+
+salida:
+  nombre: "04-PARTS.csv"
+
+entrada:
+  hoja: "Part Search Results"      # Sheet2/Sheet3 se descartan
+  fila_encabezado: 1
+  permitir_titulos_vacios: true    # el layout trae 2 columnas sin título en el medio
+
+formato:
+  fecha: "%d/%m/%Y"
+  # Un número en una columna de fecha es un serial de Excel: se convierte a DD/MM/AAAA.
+  columnas_fecha: ["Reqt Ship Date", "At Packing Receiving", "At Packing Laydown",
+                   "At Packing Loaded", "Shipped  Packing", "Actual Shipped",
+                   "Planned At Port", "Actual At Port",
+                   "Planned Departure", "Actual Departure",
+                   "Planned Arrival at Port of Unload", "Actual Arrival at Port of Unload"]
+
+transformaciones:
+  # Sin lugar de empaque la pieza todavía no está en el circuito: se elimina.
+  - filtrar_no_vacias: {columna: "Packing Receiving Location"}
+
+  # Ventana de ETA -15/+30. Acá las de arribo vacío TAMBIÉN se eliminan
+  # (`conservar_vacias: false`), por instrucción de la operación.
+  - filtrar_ventana_fecha:
+      columna: "Planned Arrival at Port of Unload"
+      dias_atras: 15
+      dias_adelante: 30
+      conservar_vacias: false
+  # Filas sin factura se eliminan
+  - filtrar_no_vacias: {columna: "Invoice Number"}
+
+  # UNA línea por PIEZA: factura + parte + Load ID. Factura + parte sola NO
+  # alcanza: la misma parte viaja en varios Load ID. Sin `sumar`: si un día se
+  # repitiera la clave, sería el mismo Load dos veces, y sumarlo duplicaría la
+  # cantidad.
+  - deduplicar:
+      columnas: ["Invoice Number", "Part Number", "Load ID"]
+      criterio: mas_datos
+
+  - reemplazar_texto: {buscar: ";", reemplazar: ","}
+
+validaciones:
+  - columnas_requeridas:
+      columnas: ["Part Number", "Invoice Number", "Packer ID", "Load ID",
+                 "Packing Receiving Location", "Planned Arrival at Port of Unload"]
+  - fechas_validas:
+      columnas: ["Reqt Ship Date", "At Packing Receiving", "Actual Shipped",
+                 "Planned Departure", "Planned Arrival at Port of Unload",
+                 "Actual Arrival at Port of Unload"]
+  # Packer ID incompleto puede duplicar las piezas en el destino
+  - no_vacias:
+      columna: "Packer ID"
+      nivel: advertencia
+
+# ── Archivo maestro (data/registro/parts_shipper.csv) ─────────────────────────
+# El reporte es a nivel de pieza: la factura sola se repite en casi todas las filas.
+registro:
+  # La misma clave que el `deduplicar`.
+  clave: ["Invoice Number", "Part Number", "Load ID"]
+  # Campos que el portal suele traer mal o vacíos y que corrige la operación.
+  campos_corregibles: ["Packer ID", "Container", "Planned Arrival at Port of Unload"]
+
+# ── Campos canónicos ─────────────────────────────────────────────────────────
+campos_canonicos:
+  # Sin `bl`: este reporte no trae BL. La identidad la da la factura.
+  factura: "Invoice Number"
+  contenedor: "Container"
+  eta: "Planned Arrival at Port of Unload"

@@ -1,0 +1,167 @@
+# 03-TRANSIT — forwarder terrestre/marítimo europeo, "In Transit Report" del portal.
+#
+# Reemplaza una macro de Excel (.xlsm):
+#
+#     Sheets("DINAMICA").PivotTables("TablaDinámica1").PivotCache.Refresh
+#     .Columns("A:AS").RemoveDuplicates Columns:=45, Header:=xlYes
+#     .Range("G2").FormulaR1C1 = "=VLOOKUP(RC[38],DINAMICA!C[-6]:C[-5],2,0)"
+#
+# Traducido: la columna auxiliar AS es `=CONCATENATE(F,H)` (Nº de parte + Nº de
+# factura comercial); la dinámica agrupa por esa clave y suma la cantidad; el
+# VLOOKUP reinyecta ese total en la columna "Cantidad". O sea: UNA fila por
+# (parte + factura), con la Cantidad sumada de las líneas que se colapsan.
+#
+# Lo desordenado de este reporte:
+#   - TODO viene como texto, fechas con hora en unas columnas y sin hora en otras;
+#   - un título de columna repetido ("Loaded for pre-carriage") con datos distintos;
+#   - columnas que sobran, columnas que faltan y un orden distinto al del destino;
+#   - cantidades "2.0" / "6300.0".
+agente: transit_report
+
+salida:
+  nombre: "03-TRANSIT.csv"
+
+entrada:
+  hoja: "In Transit"
+  fila_encabezado: 1
+
+formato:
+  fecha: "%d/%m/%Y"
+  # Se declaran los dos formatos; la hora se descarta al reformatear a es-AR.
+  fecha_origen: ["%d.%m.%Y %H:%M", "%d.%m.%Y"]
+  # Las columnas que el destino espera como fecha. El destino espera el segundo
+  # "Loaded for pre-carriage", "Arrived at rail yard" y "Enroute to delivery by
+  # truck" con el texto crudo del portal ("06.03.2026 00:00"), así que no se listan.
+  columnas_fecha:
+    - "Fecha de estado actual del embarque"
+    - "Fecha de embarque"
+    - "Fecha de vencimiento"
+    - "Fecha de notificación"
+    - "Fecha de disponibilidad del embarque"
+    - "Recolección del artículo"
+    # el crudo repite este título y solo la primera aparición va como fecha
+    - {columna: "Loaded for pre-carriage", ocurrencia: 1}
+    - "In-gate POL"
+    - "Horario de recolección"
+    - "Hora de llegada del buque"
+    - "Vessel/Flight arrival"
+    - "Discharged from vessel"
+    - "Fecha estimada de llegada al lugar de entrega"
+    - "Hora de llegada"
+  numeros:
+    # "sacar puntos, formato general": el portal manda 2.0 / 6300.0.
+    "Cantidad": {decimales: 0}
+
+transformaciones:
+  # Las líneas sin factura comercial no se suben. Va PRIMERO porque la factura es
+  # media clave del dedup: si entraran, todas las líneas sin factura de un mismo
+  # Nº de parte se colapsarían en una sola y se sumarían entre sí.
+  - filtrar_no_vacias: {columna: "Nº de factura comercial"}
+
+  # Columnas que el portal no trae y el destino sí espera.
+  - agregar_columna: {nombre: "Ets", valor: ""}
+  - agregar_columna: {nombre: "Reference", desde: "Nº de pedido"}
+  - agregar_columna: {nombre: "Comment", valor: ""}
+
+  # La macro. `criterio: primera` = el desempate de RemoveDuplicates de Excel.
+  - deduplicar:
+      columnas: ["Nº de parte", "Nº de factura comercial"]
+      criterio: primera
+      sumar: ["Cantidad"]
+
+  # Borrar, mover y ubicar columnas de una sola vez: borra "Incoterms del
+  # embarque", "Referencia", "Nº de PFR", "Nº de contrato" y "Delivery dispatched"
+  # (no están en la lista), mueve "Nivel de servicio" delante de "Tipo de
+  # referencia" y ubica las tres columnas nuevas. Es el encabezado exacto del destino.
+  - orden_columnas:
+      columnas:
+        - "Nº de pedido"
+        - "Dirección de proveedor del embarque"
+        - "Estado actual del embarque"
+        - "Fecha de estado actual del embarque"
+        - "Nº de orden de Compra"
+        - "Nº de parte"
+        - "Cantidad"
+        - "Nº de factura comercial"
+        - "Nº de lista de empaque"
+        - "Pedir unidad"
+        - "Fecha de embarque"
+        - "Fecha de vencimiento"
+        - "Fecha de notificación"
+        - "Fecha de disponibilidad del embarque"
+        - "Recolección del artículo"
+        - "Tipo de orden"
+        - "Destino del contenedor"
+        - "Nivel de servicio"
+        - "Tipo de referencia"
+        - "Descripción del tipo de contenedor"
+        - "Nº de contenedor"
+        - "Transportista"
+        - "Nombre del buque"
+        - "Nº de vuelo/viaje"
+        - "BL/AWB"
+        - "House BL/AWB"
+        # el crudo repite este título; el destino conserva los dos
+        - {columna: "Loaded for pre-carriage", ocurrencia: 1}
+        - "Ets"
+        - "In-gate POL"
+        - "Horario de recolección"
+        - "Puerto de orígen"
+        - "Hora de llegada del buque"
+        - "Puerto de destino"
+        - "Vessel/Flight arrival"
+        - "Discharged from vessel"
+        - {columna: "Loaded for pre-carriage", ocurrencia: 2}
+        - "Arrived at rail yard"
+        - "Enroute to delivery by truck"
+        - "Fecha estimada de llegada al lugar de entrega"
+        - "Hora de llegada"
+        - "Lugar de entrega"
+        - "Destino final"
+        - "Reference"
+        - "Comment"
+
+  # Ventana de ETA -15/+30 sobre la llegada del buque. El filtro del portal se pone
+  # al bajar el reporte y no siempre sale bien: acá el tope es DURO. Las líneas sin
+  # fecha son embarques todavía sin despachar: se suben igual y quedan avisadas.
+  - filtrar_ventana_fecha:
+      columna: "Hora de llegada del buque"
+      dias_atras: 15
+      dias_adelante: 30
+      conservar_vacias: true
+
+  - reemplazar_texto: {buscar: ";", reemplazar: ","}
+
+validaciones:
+  - columnas_requeridas:
+      columnas: ["Nº de pedido", "Nº de parte", "Nº de factura comercial",
+                 "Cantidad", "Hora de llegada del buque"]
+  - fechas_validas:
+      columnas: ["Fecha de estado actual del embarque", "Fecha de embarque",
+                 "Fecha de vencimiento", "Fecha de notificación",
+                 "Fecha de disponibilidad del embarque", "Recolección del artículo",
+                 "In-gate POL", "Horario de recolección", "Hora de llegada del buque",
+                 "Fecha estimada de llegada al lugar de entrega"]
+  # Sin ETA no hay de dónde deducirlo: NO se inventa la fecha. Se sube así y el
+  # aviso queda en hallazgos.log para consultarlo con el forwarder.
+  - no_vacias:
+      columna: "Hora de llegada del buque"
+      nivel: advertencia
+  # Causa de rechazo conocida del destino: puntos en la columna Cantidad.
+  - sin_caracter:
+      columna: "Cantidad"
+      caracter: "."
+
+# ── Archivo maestro (data/registro/transit_report.csv) ────────────────────────
+# La misma clave compuesta que usa `deduplicar`.
+registro:
+  clave: ["Nº de factura comercial", "Nº de parte"]
+  # Campos que el portal suele traer mal o vacíos y que corrige la operación.
+  campos_corregibles: ["House BL/AWB", "Nº de contenedor", "Hora de llegada del buque"]
+
+# ── Campos canónicos ─────────────────────────────────────────────────────────
+campos_canonicos:
+  bl: "House BL/AWB"
+  factura: "Nº de factura comercial"
+  contenedor: "Nº de contenedor"
+  eta: "Fecha estimada de llegada al lugar de entrega"

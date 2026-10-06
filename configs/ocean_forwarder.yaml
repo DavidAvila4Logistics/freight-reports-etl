@@ -1,0 +1,141 @@
+# 02-OCEAN — consolidador marítimo. Una línea por pieza.
+#
+# Reemplaza una planilla que hacía el cruce a mano:
+#   data!H (HAWB/HBL) = VLOOKUP(L, bajada!$C$2:$D$500, 2, 0)
+#
+# HACEN FALTA DOS ARCHIVOS en data/raw/ocean_forwarder/, de orígenes distintos:
+#   1) "Active Shipments.xlsx"   <- portal del forwarder, el cuerpo
+#   2) "*daily_report*.xlsx"     <- adjunto del mail diario, la tabla de búsqueda
+#                                   (trae el BL hijo de cada factura)
+#
+# Lo desordenado de este reporte:
+#   - el BL hijo viene VACÍO del portal y solo está en el reporte del mail;
+#   - el mail repite la misma factura en varias filas, y a veces la primera todavía
+#     no tiene el BL emitido;
+#   - fechas en "27 Jul 2026" en casi todas las columnas, y en ISO con hora en otra;
+#   - filas copia (sin Product Id) y POs con varios números en la misma celda.
+agente: ocean_forwarder
+
+salida:
+  nombre: "02-OCEAN.csv"
+
+entrada:
+  hoja: "data"
+  fila_encabezado: 1
+  auxiliares:
+    daily_report:
+      patron: "*daily_report*.xlsx"
+      hoja: 0
+      fila_encabezado: 2             # la fila 1 es el título del reporte
+      permitir_titulos_vacios: true  # el encabezado trae una columna sin título
+
+formato:
+  fecha: "%d/%m/%Y"
+  # Se prueban en orden: el que matchea gana, el que no, deja el texto crudo.
+  fecha_origen: ["%d %b %Y", "%Y-%m-%dT%H:%M:%S"]
+  columnas_fecha: ["Pickup date", "ETD", "ETA", "InvoiceDate", "ATD", "ATA"]
+  # Weight / Volume NO se declaran en `numeros`: sin decimales forzados, el motor
+  # conserva la precisión de origen y solo cambia el separador
+  # (110.88 -> "110,88", 0.819 -> "0,819", 7750 -> "7750").
+
+transformaciones:
+  # El cruce: la columna HAWB/HBL se llena buscando la factura en el reporte del mail.
+  - cruzar:
+      auxiliar: "daily_report"
+      clave_local: "Invoice#"
+      clave_externa: "Invoice#"
+      traer:
+        "HAWB/HBL": "House No"       # el BL hijo
+      si_no_encuentra: vaciar
+      # Ante una factura repetida en el mail, gana la primera fila que SÍ tiene el
+      # BL hijo. Con el desempate de Excel la carga se subía sin documento.
+      omitir_vacios_en_auxiliar: true
+
+  # Las filas sin Product Id son copias de otra fila con la misma factura, no
+  # cargas nuevas.
+  - filtrar_no_vacias: {columna: "Product Id"}
+
+  # Facturas puramente numéricas de hasta 12 dígitos: si el portal las entrega
+  # como número, no pueden salir como '3.18e+11'.
+  - normalizar_entero: {columna: "Invoice#"}
+
+  # Documento de transporte madre/hijo: TYPE = Straight -> BL madre; TYPE =
+  # Consolidated -> BL hijo. El documento elegido queda en las DOS columnas.
+  # Straight: la madre (la que trae el portal) baja al HAWB/HBL.
+  - copiar_columna_si:
+      si: {columna: "TYPE", igual: "Straight"}
+      origen: "MAWB/MBL"
+      destino: "HAWB/HBL"
+  # Consolidated: el hijo (el que trajo el cruce con el mail) sube al MAWB/MBL.
+  - copiar_columna_si:
+      si: {columna: "TYPE", igual: "Consolidated"}
+      origen: "HAWB/HBL"
+      destino: "MAWB/MBL"
+
+  # Si PoNumber detalla más de un número, queda uno solo.
+  - primer_token: {columna: "PoNumber"}
+  # El destino no acepta PoNumber vacío y ahí sirve cualquier código de la
+  # columna. Se usa el primero no vacío para que dos corridas del mismo crudo den
+  # el mismo CSV.
+  - rellenar_vacias: {columna: "PoNumber", desde: primera_no_vacia}
+
+  # Ventana de ETA -15/+30, sin descartar nunca por antigüedad una fila sin factura.
+  - filtrar_ventana_fecha:
+      columna: "ETA"
+      dias_atras: 15
+      dias_adelante: 30
+      conservar_vacias: true
+      conservar_si_vacia: "Invoice#"
+
+  # UNA línea por PIEZA: factura + Product Id. Factura + Product Id repetidos son
+  # legítimos (equipos con serial distinto, qty 1 cada uno): se colapsan y `sumar`
+  # da la cantidad de la pieza. `conservar_si_vacia`: las filas sin factura no se
+  # agrupan solo por Product Id, que sumaría cargas que no tienen nada que ver.
+  # Va DESPUÉS de los filtros, para comparar solo entre las filas que van a subir.
+  - deduplicar:
+      columnas: ["Invoice#", "Product Id"]
+      criterio: mas_datos
+      sumar: ["Qty shipped"]
+      conservar_si_vacia: "Invoice#"
+
+  - reemplazar_texto: {buscar: ";", reemplazar: ","}
+
+validaciones:
+  - columnas_requeridas:
+      columnas: ["JobNo", "MAWB/MBL", "HAWB/HBL", "Invoice#", "ETA", "ModeOfTransport", "TYPE"]
+  - fechas_validas:
+      columnas: ["Pickup date", "ETD", "ETA", "InvoiceDate", "ATD"]
+  # El destino toma el documento de transporte de HAWB/HBL: si el cruce no
+  # encontró la factura Y la fila es Consolidated, se subiría sin BL. Bloquea.
+  - no_vacias:
+      columna: "HAWB/HBL"
+      nivel: error
+  # Facturas con coma adentro: mal formateadas en el origen.
+  - sin_caracter:
+      columna: "Invoice#"
+      caracter: ","
+      nivel: advertencia
+  # Las filas sin factura se conservan: el aviso dice qué JobNo hay que pedir.
+  - no_vacias:
+      columna: "Invoice#"
+      nivel: advertencia
+      identificar_por: "JobNo"
+  # Guarda de regresión de las dos reglas de arriba: si esto avisa, no corrieron.
+  - no_vacias: {columna: "PoNumber", nivel: advertencia}
+  - no_vacias: {columna: "Product Id", nivel: advertencia}
+
+# ── Archivo maestro (data/registro/ocean_forwarder.csv) ───────────────────────
+registro:
+  # La misma clave que el `deduplicar`: una fila por pieza. Las filas SIN factura
+  # repiten clave (`|<Product Id>`) y el registro las desempata por orden de
+  # aparición; ver `_clave_interna` en motor/registro.py.
+  clave: ["Invoice#", "Product Id"]
+  # Campos que el portal suele traer mal o vacíos y que corrige la operación.
+  campos_corregibles: ["HAWB/HBL", "MAWB/MBL", "PoNumber"]
+
+# ── Campos canónicos ─────────────────────────────────────────────────────────
+campos_canonicos:
+  bl: "MAWB/MBL"
+  factura: "Invoice#"
+  contenedor: "Container"
+  eta: "ETA"

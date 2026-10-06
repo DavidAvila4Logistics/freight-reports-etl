@@ -1,0 +1,28 @@
+# Rutas de operación. Defaults: data/*. Se pueden declarar rutas absolutas:
+# dir_raw: D:/ruta/raw
+# dir_processed: D:/ruta/processed
+# dir_logs: D:/ruta/logs
+# dir_registro: D:/ruta/registro            # archivo maestro acumulativo por agente
+# dir_correcciones: D:/ruta/correcciones    # correcciones de la operación, una por CSV
+# dir_backup: D:/ruta/back_up_data_used     # crudos ya procesados, uno por agente
+#
+# Después de una corrida OK el crudo consumido se MUEVE de raw al backup, así
+# `raw/<agente>/` guarda lo que falta procesar y no el historial. No es cosmético:
+# el motor elige el archivo más reciente por fecha de modificación, y con varios
+# crudos en la misma carpeta guardados de una sentada puede ganar el equivocado.
+# Efecto buscado de rebote: si un día no llegó la descarga, el agente avisa en vez
+# de reprocesar el crudo de ayer y re-subirlo como si fuera de hoy.
+# Se apaga con `archivar_usados: false` o con --no-archivar.
+# archivar_usados: true
+#
+# El registro y las correcciones son la memoria del pipeline y NO se regeneran: al
+# mover el motor a otra PC hay que copiar esas carpetas junto con el código.
+
+# ── Corrida diaria en lote (`run_all.bat` / `main.py --lote`) ────────────────
+# Un agente que falle o rebote NO frena a los demás; el resumen final dice cuáles
+# hay que revisar. Para agregar uno nuevo: su YAML en configs/ y su nombre acá.
+lote_diario:
+  - air_forwarder
+  - ocean_forwarder
+  - transit_report
+  - parts_shipper

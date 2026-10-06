@@ -1,0 +1,17 @@
+# Datos de entrada, salidas, registro y logs: se versiona solo el código.
+data/**
+!data/*/
+!data/*/.gitkeep
+
+# Temporales de Excel y de Office
+~$*
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+
+# Editor
+.vscode/
+.idea/

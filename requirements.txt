@@ -1,0 +1,16 @@
+# Versiones FIJADAS a propósito. El motor produce archivos que el destino lee por
+# posición y formato: una versión distinta de polars o de openpyxl puede cambiar
+# cómo se lee una celda o cómo se ordena una agrupación, y el CSV sale mal sin que
+# nadie se entere. Para subir una versión: cambiarla acá y correr `python -m pytest`.
+
+# Motor ETL. Todas las transformaciones del YAML son expresiones de polars.
+polars==1.43.2
+
+# Lectura fiel de .xlsx / .xlsm (valores calculados, columnas ocultas incluidas).
+openpyxl==3.1.5
+
+# Configs de los agentes (configs/*.yaml).
+PyYAML==6.0.2
+
+# Tests.
+pytest>=8

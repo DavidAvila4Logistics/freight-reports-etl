@@ -1,0 +1,122 @@
+# 01-AIR — forwarder aéreo, "Shipment Profile Report" que llega por mail.
+#
+# Lo desordenado de este reporte:
+#   - un preámbulo con los filtros aplicados, de largo variable (el encabezado
+#     cambia de fila según cuántos filtros se pusieron al bajarlo);
+#   - dos columnas vacías adelante que a veces vienen y a veces no;
+#   - fechas como fecha real de Excel en unas columnas y como texto, en dos
+#     formatos distintos, en otras;
+#   - la casilla de facturas mezcla facturas con prefijo de año, referencias
+#     internas que no son facturas y códigos de otra serie.
+#
+# Reemplaza una planilla Excel con una columna "corrige facturas" hecha con IF
+# anidados: las reglas de abajo son esa fórmula, factura por factura.
+agente: air_forwarder
+
+salida:
+  nombre: "01-AIR.csv"
+
+entrada:
+  hoja: "Shipments"                # el libro trae además una hoja de filtros
+  # Se busca por ancla en vez de clavar el número, así un filtro de más en la
+  # consulta no rompe el agente.
+  fila_encabezado: {ancla: "HAWB", buscar_hasta: 40}
+  # Se descarta todo lo que esté a la izquierda de `HAWB`, que es la primera
+  # columna de la salida, vengan o no las dos columnas vacías.
+  columnas_omitir_iniciales: {hasta: "HAWB"}
+
+formato:
+  fecha: "%d/%m/%Y"
+  # Los dos formatos de texto que mezcla el reporte; el que matchea gana.
+  fecha_origen: ["%d-%b-%y %I:%M %p", "%d-%b-%y"]
+  columnas_fecha: ["Pickup at Shippers", "Estimated Departure", "ETA ",
+                   "Arrived at Destination", "Consol ATD"]
+  numeros:
+    "Gross Weight kgs": {decimales: 2}
+    "Chargeable weight kgs": {decimales: 2}
+    "Volume m3": {decimales: 2}
+
+transformaciones:
+  # Corrección de números de factura — la fórmula de la planilla.
+  # Las reglas se evalúan EN ORDEN y gana la primera que matchea: '261XA0101J'
+  # matchea tanto '261XA' (regla 1) como '26' (regla 2), y tiene que ganar la 1.
+  #
+  # MANTENIMIENTO ANUAL: los 2 primeros dígitos del prefijo son el año. En enero
+  # hay que agregar los prefijos del año nuevo (271X…) a la regla 1 y el "27" a la 2.
+  - corregir_facturas:
+      columna: "Customer References"
+      separador: ","
+      unir_con: ", "
+      # Referencias internas que no son facturas: se borran. Si la casilla queda
+      # vacía, la validación `no_vacias` de abajo dice qué guías revisar: el motor
+      # no inventa el número.
+      eliminar_prefijos: ["9900", "REF"]
+      deduplicar: true
+      reglas:
+        # Facturas "<año>1X<letra>": se les saca el año de adelante
+        - prefijos: ["251XA", "251XB", "261XA", "261XB"]
+          quitar: 2
+        # Facturas numéricas del año: se les saca el año y se antepone la serie 7700
+        - prefijos: ["25", "26"]
+          quitar: 2
+          anteponer: "7700"
+        # El 070… lleva un cero de más a la izquierda: la factura son las 9
+        # posiciones que quedan.
+        - prefijos: ["070"]
+          quitar: 1
+        # Cualquier otra (705100200, D700123…) queda intacta
+
+  # Homogeneidad de serie, solo con 4 códigos o más en la casilla: el que rompe
+  # la serie mayoritaria (una orden de compra colada entre facturas) se borra.
+  - homogeneizar_serie:
+      columna: "Customer References"
+      separador: ","
+      unir_con: ", "
+      minimo_codigos: 4
+
+  # Ventana de ETA -15/+30. Las de ETA vacía SE DEJAN, y una carga sin factura
+  # no se descarta nunca por antigüedad. Ojo: el título real de la columna lleva
+  # un espacio al final.
+  - filtrar_ventana_fecha:
+      columna: "ETA "
+      dias_atras: 15
+      dias_adelante: 30
+      conservar_vacias: true
+      conservar_si_vacia: "Customer References"
+
+  # El CSV de salida no lleva comillas: ningún ';' puede sobrevivir en las celdas.
+  - reemplazar_texto: {buscar: ";", reemplazar: ","}
+
+validaciones:
+  - columnas_requeridas:
+      columnas: ["HAWB", "Customer References", "ETA", "MAWB", "Consignee Name"]
+  - fechas_validas:
+      columnas: ["Pickup at Shippers", "Estimated Departure", "ETA",
+                 "Arrived at Destination", "Consol ATD"]
+  # Causa de rechazo conocida del destino: facturas duplicadas. Va como
+  # advertencia: un mismo HAWB puede repetir factura legítimamente.
+  - sin_duplicados:
+      columna: "Customer References"
+      nivel: advertencia
+  # Las casillas que quedaron vacías: el aviso dice qué guías hay que pedir.
+  - no_vacias:
+      columna: "Customer References"
+      nivel: advertencia
+      identificar_por: "HAWB"
+
+# ── Archivo maestro (data/registro/air_forwarder.csv) ─────────────────────────
+# La guía aérea SOLA. La factura no puede ser parte de la clave: la reescribe
+# `corregir_facturas`, y cada vez que cambiara, la carga cambiaría de identidad.
+registro:
+  clave: ["HAWB"]
+  # Campos que el portal suele traer mal o vacíos y que corrige la operación.
+  campos_corregibles: ["Customer References", "ETA "]
+
+# ── Campos canónicos ─────────────────────────────────────────────────────────
+# Traduce BL / factura / contenedor / ETA a las columnas reales de este reporte.
+# Los usan los chequeos automáticos de números (`validador.validaciones_automaticas`).
+# Una clave ausente = ese campo no existe en el agente (es aéreo: sin contenedor).
+campos_canonicos:
+  bl: "HAWB"
+  factura: "Customer References"
+  eta: "ETA "
